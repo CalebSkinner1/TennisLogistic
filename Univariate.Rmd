@@ -1,0 +1,653 @@
+---
+title: "Tennis_Logistic_Univariate"
+author: "Caleb Skinner"
+date: "2023-08-11"
+output:
+  pdf_document:
+    toc: yes
+always_allow_html: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r for reading, include = FALSE}
+library("knitr")
+library("tidyverse")
+library("jtools")
+library("blorr")
+library("ROCR")
+library("caret")
+library("scales")
+library("roll")
+library("lmtest")
+library("flextable")
+library("officer")
+```
+
+\newpage
+
+# Overview
+
+**Logistic regression** is a statistical model used to explain and analyze the relationship between one dependent (or response) variable and one or more independent (or predictor) variables. It follows many of the guidelines and procedures of simple linear regression *(link to other module)*. However, unlike some other regression models, logistic regression's dependent variable must be a binary variable with two outcomes. The independent variables can be any type of variable. Logistic regression uses the independent variables to predict the outcome of the dependent variable. Given several inputs, it assigns the probability of an outcome ranging from 0 to 1.
+
+For example, a statistics teacher may be interested in predicting which of her students misses class on the day of a test. This is a binary categorical variable: a student either attends or is absent. The teacher can then look compile a list of predictor variables. This could include past attendance rates, homework grades, student GPA, day of the week of the test, illness history, etc. If she keeps track of this data, these variables will help her to predict the students that will miss class. Other logistic regression techniques will help her to identify which variables are important and the level of confidence in her predictions.
+
+Logistic regression is commonly used to predict future outcomes and classify observations. It has numerous practical examples. It is widely used in the medical community to forecast the onset of diseases, in political science to predict elections, in marketing to understand consumer behavior, in banking to catch fraud, and in sports to predict victors.
+
+## Tennis Overview
+
+In this module, we'll analyze a sport that is full of dependent variables prime for logistic regression. Tennis's structure is full of binary scoring. For each point, game, set, and match, one player wins and one player loses. There is no third or partial option.
+
+Tennis's scoring system can seem a bit complex for those unfamiliar. In short, two players play one **match**. In mens' tennis, one player must win three **sets** to win a match. In womens' tennis, one player must win two sets. The first player to six **games** (win by two) wins a set. If two players are tied at six games a piece, they play a **tiebreak** to determine the set winner. The first player to four **points** (win by two) wins a game. The points have unique values.
+
+* 0 points: 0 (love)
+* 1 point: 15
+* 2 points: 30
+* at least 3 points: 40
+
+unless...
+
+* leading by 1 point (ie 4 points to 3): AD (advantage)
+
+One player **serves** to start the point (and the other **returns**) for an entire game, alternating serves each game with their opponent. Players have an advantage when they serve, and it is very significant when a player wins a game that their opponent serves. Winning a game as a returner is called a **break**. Conversly, winning a game as a server is called a **hold**.
+
+Each week, there are single elimination tournaments for these players to compete in. We'll look at tennis's most famous tournament, Wimbledon. Wimbledon begins with 128 players in the men's and women's singles competitions. If the players win, they move on to the next round. After seven rounds, a champion is crowned.
+
+This should be a thorough enough summary for you to understand the contents of the module. If you are still struggling to understand the rules of tennis, please see our data dictionary on the next page for clarity.
+
+# Data
+
+```{r wrangling}
+set_flextable_defaults(
+  font.size = 10, theme_fun = theme_zebra,
+  padding = 6,
+  background.color = "#EFEFEF")
+
+w2022_matches_0 <- read_csv("tennis_slam_pointbypoint/2022-wimbledon-matches.csv") %>%
+  select(match_id, player1, player2) %>%
+  mutate(player1 = recode(player1,
+                          "Tim Van Rijthoven" = "Tim van Rijthoven",
+                          "Alex De Minaur" = "Alex de Minaur",
+                          "Jan Lennard Struff" = "Jan-Lennard Struff",
+                          "Albert Ramos Vinolas" = "Albert Ramos-Vinolas",
+                          "Marc Andrea Huesler" = "Marc-Andrea Huesler",
+                          "Felix Auger Aliassime" = "Felix Auger-Aliassime",
+                          "Chun Hsin Tseng" = "Chun-Hsin Tseng",
+                          "Botic Van De Zandschulp" = "Botic van de Zandschulp",
+                          "Coco Vandeweghe" = "CoCo Vandeweghe",
+                          "Alison Riske Amritraj" = "Alison Riske",
+                          "Elena Gabriela Ruse" = "Elena-Gabriela Ruse",
+                          "Ylena In Albon" = "Ylena In-Albon",
+                          "Irina Camelia Begu" = "Irina-Camelia Begu"),
+         player2 = recode(player2,
+                          "Tim Van Rijthoven" = "Tim van Rijthoven",
+                          "Alex De Minaur" = "Alex de Minaur",
+                          "Jan Lennard Struff" = "Jan-Lennard Struff",
+                          "Albert Ramos Vinolas" = "Albert Ramos-Vinolas",
+                          "Marc Andrea Huesler" = "Marc-Andrea Huesler",
+                          "Felix Auger Aliassime" = "Felix Auger-Aliassime",
+                          "Chun Hsin Tseng" = "Chun-Hsin Tseng",
+                          "Botic Van De Zandschulp" = "Botic van de Zandschulp",
+                          "Coco Vandeweghe" = "CoCo Vandeweghe",
+                          "Alison Riske Amritraj" = "Alison Riske",
+                          "Elena Gabriela Ruse" = "Elena-Gabriela Ruse",
+                          "Ylena In Albon" = "Ylena In-Albon",
+                          "Irina Camelia Begu" = "Irina-Camelia Begu"))
+
+w2022_rankings <- read_csv("tennis_slam_pointbypoint/2022-wimbledon-rankings.csv") %>% select(Player, Ranking) %>%
+  mutate(Player = stringi::stri_trans_general(Player, "Latin-ASCII"),
+         Player = recode(Player,
+                         "Cori Gauff" = "Coco Gauff"))
+
+w2022_matches <- w2022_matches_0 %>% dplyr::rename(Player = player1) %>%
+  left_join(w2022_rankings, by = "Player") %>%
+  mutate(Ranking = replace_na(Ranking, 600)) %>%
+  dplyr::rename(player1 = Player,
+         Player = player2,
+         ranking1 = Ranking) %>%
+  left_join(w2022_rankings, by = "Player") %>%
+  mutate(Ranking = replace_na(Ranking, 600)) %>% 
+  dplyr::rename(player2 = Player,
+         ranking2 = Ranking)
+
+# reading in data
+w2022_0 <- read_csv("tennis_slam_pointbypoint/2022-wimbledon-points.csv",
+                  col_types = cols(
+                    PointNumber = col_double()))
+
+# filtering out some data and removing excess variables
+w2022_1 <- w2022_0 %>%
+  filter((P1PointsWon + P2PointsWon) != 0) %>%
+  
+  #check below later, may want to add these columns back in. For now, we'll remove them for brevity
+  select(-Rally, -P1FirstSrvIn, -P1FirstSrvWon, -P2FirstSrvIn, -P2FirstSrvWon, -ServeIndicator,
+         -P1SecondSrvIn, -P1SecondSrvWon, -P2SecondSrvIn, -P2SecondSrvWon, -Speed_KMH,
+         -P1ForcedError, -P2ForcedError, -Serve_Direction, -Winner_FH, -Winner_BH,
+         -ServingTo, -P1TurningPoint, -P2TurningPoint, -WinnerType, -History, -P1Momentum, -P2Momentum,
+         -contains("BreakPoint")) %>%
+  
+  # creating these identifiers
+  mutate(
+    tiebreak = if_else(GameNo == 13, 1, 0),
+    set_winner = if_else(tiebreak == 1, GameWinner, SetWinner),
+    retired = if_else(set_winner == 0 & match_id != lead(match_id), 1, 0), # cannot tell which player retired
+    first_pt_set = if_else(GameNo == 1 & P1Score == 15 & P2Score == 0 |
+                             GameNo == 1 & P1Score == 0 & P2Score == 15, 1, 0),
+    last_pt_set = if_else(set_winner != 0 | retired != 0, 1, 0),
+    match_pt = if_else(match_id != lead(match_id), 1, 0),
+    p1_break_pt = lag((if_else(PointServer == 2 & P1Score == "AD", 1, 0) +
+                         if_else(PointServer == 2 & P1Score == 40 & P2Score != 40 & P2Score != "AD", 1, 0))),
+    p2_break_pt = lag((if_else(PointServer == 1 & P2Score == "AD", 1, 0) +
+                         if_else(PointServer == 1 & P2Score == 40 & P1Score != 40 & P1Score != "AD", 1, 0))),
+    p1_break_pt_won = if_else(p1_break_pt == 1 & PointWinner == 1, 1, 0),
+    p2_break_pt_won = if_else(p2_break_pt == 1 & PointWinner == 2, 1, 0),
+    p1_break_pt_missed = p1_break_pt - p1_break_pt_won,
+    p2_break_pt_missed = p2_break_pt - p2_break_pt_won,
+    pt_server1 = lead(PointServer),
+    pt_server = pt_server1*2 - 3,
+    status = case_when(
+      P1GamesWon > P2GamesWon + 1 ~ "p1_break",
+      P2GamesWon > P1GamesWon + 1 ~ "p2_break",
+      P1GamesWon > P2GamesWon + 1 + pt_server ~ "p1_break",
+      P2GamesWon > P1GamesWon + 1 + pt_server*-1 ~ "p2_break",
+      .default = "no_break"),
+    status = lag(status),
+    status = if_else(lag(set_winner) > 0, "no_break", status),
+    status = replace_na(status, "no_break"),
+    p1_score = lag(P1Score),
+    p2_score = lag(P2Score),
+    p1_score = replace_na(p1_score, "0"),
+    p2_score = replace_na(p2_score, "0"),
+    p1_games = lag(P1GamesWon),
+    p2_games = lag(P2GamesWon),
+    p1_games = if_else(lag(set_winner) > 0, 0, p1_games),
+    p2_games = if_else(lag(set_winner) > 0, 0, p2_games),
+    p1_games = replace_na(p1_games, 0),
+    p2_games = replace_na(p2_games, 0),
+    p1_win_set = if_else(set_winner == 1, 1, 0),
+    p2_win_set = if_else(set_winner == 2, 1, 0)) %>%
+  group_by(match_id) %>%
+  mutate(
+    p1_sets = cumsum(p1_win_set),
+    p2_sets = cumsum(p2_win_set),
+    p1_sets = lag(p1_sets),
+    p2_sets = lag(p2_sets),
+    p1_sets = if_else(lag(match_pt) == 1, 0, p1_sets),
+    p2_sets = if_else(lag(match_pt) == 1, 0, p2_sets),
+    p1_sets = replace_na(p1_sets, 0),
+    p2_sets = replace_na(p2_sets, 0),
+  ) %>%
+  ungroup() %>%
+  mutate(
+         # divides matches up between men's and women's
+         sex = if_else(str_detect(match_id, "-1"), 1, 0),
+         
+         # removes NA from first line
+         across(contains("break_pt"), ~replace_na(.,0))) %>%
+  select(-pt_server1, -pt_server, -SetWinner, -P1Score, -P2Score, -contains("GamesWon"), -contains("win_set")) %>%
+  left_join(w2022_matches, by = "match_id")
+
+# function that calculates the mode
+getmode <- function(v) {
+  uniqv <- unique(v)
+  uniqv[which.max(tabulate(match(v, uniqv)))]}
+
+w2022 <- w2022_1 %>% filter(last_pt_set == 1) %>%
+  group_by(match_id) %>%
+  summarise(match_victor = getmode(set_winner),
+            retired = sum(retired)) %>%
+  filter(retired == 0) %>%
+  select(-retired) %>%
+  
+  # adding walkover victors, checked winners online
+  add_row(match_id = c("2022-wimbledon-1128", "2022-wimbledon-1207", "2022-wimbledon-2144", "2022-wimbledon-2146"),
+          match_victor = c(1, 1, 2, 2)) %>%
+  right_join(w2022_1, by = "match_id") %>%
+  dplyr::rename(point_no = PointNumber,
+         elapsed_time = ElapsedTime,
+         set_no = SetNo,
+         game_no = GameNo,
+         server = PointServer,
+         serve_no = ServeNumber,
+         point_victor = PointWinner,
+         game_winner = GameWinner,
+         p1_points_won = P1PointsWon,
+         p2_points_won = P2PointsWon,
+         p1_ace = P1Ace,
+         p2_ace = P2Ace,
+         p1_winner = P1Winner,
+         p2_winner = P2Winner,
+         winner_shot_type = WinnerShotType,
+         p1_double_fault = P1DoubleFault,
+         p2_double_fault = P2DoubleFault,
+         p1_unf_err = P1UnfErr,
+         p2_unf_err = P2UnfErr,
+         p1_net_pt = P1NetPoint,
+         p2_net_pt = P2NetPoint,
+         p1_net_pt_won = P1NetPointWon,
+         p2_net_pt_won = P2NetPointWon,
+         p1_distance_run = P1DistanceRun,
+         p2_distance_run = P2DistanceRun,
+         rally_count = RallyCount,
+         speed_mph = Speed_MPH,
+         serve_width = ServeWidth,
+         serve_depth = ServeDepth,
+         return_depth = ReturnDepth) %>% 
+  
+  # moving around all the column names into an order than makes sense
+  relocate(contains("player"), .after = "match_id") %>%
+  relocate("ranking1", .after = "player1") %>%
+  relocate("ranking2", .after = "player2") %>%
+  relocate("game_no", .after = "set_no") %>%
+  relocate("server", .after = "game_no") %>%
+  relocate("point_no", .after = "server") %>%
+  relocate("status", .after = "point_no") %>% 
+  relocate(contains("sets"), .after = "status") %>% 
+  relocate(contains("games"), .after = "p2_sets") %>%
+  relocate(contains("score"), .after = "p2_games") %>%
+  relocate("point_victor", .after = "p2_score") %>%
+  relocate(contains("points_won"), .after = "point_victor") %>%
+  relocate("game_winner", .after = "p2_points_won") %>%
+  relocate("set_winner", .after = "game_winner") %>%
+  relocate("match_victor", .after = "set_winner") %>%
+  relocate("serve_no", .after = "server") %>%
+  relocate("winner_shot_type", .after = "p2_winner") %>%
+  relocate("speed_mph", .before = "serve_width") %>%
+  relocate(contains("break_pt"), .after = "p2_net_pt_won")
+
+# after the point: game_winner, set_winner, point_victor, points_won
+# before the point: elapsed_time, set_no, game_no, point_no, score, status, serve_no, games, sets
+```
+
+```{r setting up df}
+point_w2022_0 <- w2022 %>%
+  mutate(
+    server = if_else(server == 2, 0, server),
+    point_victor = if_else(point_victor == 2, 0, point_victor),
+    game_winner = if_else(game_winner == 2, 0, game_winner),
+    set_winner = if_else(set_winner == 2, 0, set_winner),
+    set_winner = if_else(set_winner == 2, 0, set_winner),
+    # lag_p1_distance = if_else(first_pt_set == 1, NA, lag(p1_distance_run)),
+    # lag_p2_distance = if_else(first_pt_set == 1, NA, lag(p2_distance_run)),
+    last_point_victor = if_else(point_no == 1, 0, lag(point_victor)), # technically this 0 should be an NA
+    set_diff = p1_sets - p2_sets,
+    # lag_p1_ace = if_else(lag(match_pt) == 0, lag(p1_ace), NA),
+    # lag_p2_ace = if_else(lag(match_pt) == 0, lag(p2_ace), NA),
+    # lag_p1_double_fault = if_else(lag(match_pt) == 0, lag(p1_double_fault), NA),
+    # lag_p2_double_fault = if_else(lag(match_pt) == 0, lag(p2_double_fault), NA),
+    pt_win_perc = if_else(set_no == 1 & game_no < 4, .5, lag(p1_points_won/(p2_points_won + p1_points_won))) * 100,
+    rank_diff = ranking2 - ranking1,
+    lastpt_p1_winner = if_else(point_no == 1, 0, lag(p1_winner)), # technically this 0 should be an NA
+    lastpt_p2_winner = if_else(point_no == 1, 0, lag(p2_winner)), # technically this 0 should be an NA
+    p1_serving_for_set = if_else(server == 1,
+                                 if_else((p1_games == 5 & (p2_games < p1_games)) |
+                                           (p1_games == 6 & (p2_games < p1_games)), 1, 0), 0),
+    p2_serving_for_set = if_else(server == 0,
+                                 if_else((p2_games == 5 & (p1_games < p2_games)) |
+                                           (p2_games == 6 & (p1_games < p2_games)), 1, 0), 0),
+    p1_serving_to_stay = if_else(server == 1,
+                                 if_else((p2_games == 5 & (p1_games < p2_games)) |
+                                           (p2_games == 6 & (p1_games < p2_games)), 1, 0), 0),
+    p2_serving_to_stay = if_else(server == 0,
+                                 if_else((p1_games == 5 & (p2_games < p1_games)) |
+                                           (p1_games == 6 & (p2_games < p1_games)), 1, 0), 0)) %>%
+  group_by(match_id) %>%
+  mutate(
+    p1_serves = cumsum(server),
+    p2_serves = point_no - p1_serves,
+    p1_serves_won = cumsum(point_victor*server),
+    p2_serves_won = cumsum((point_victor - 1)*(server - 1)),
+    p1_srv_win_perc = if_else(set_no == 1 & game_no < 7, .625, lag(p1_serves_won)/lag(p1_serves)) * 100,
+    p2_srv_win_perc = if_else(set_no == 1 & game_no < 7, .625, lag(p2_serves_won)/lag(p2_serves)) * 100,
+    p1_point = if_else(last_point_victor == 1, 1, 0),
+    p2_point = if_else(last_point_victor == 0, 1, 0),
+    p1_point_roll = roll_sum(p1_point, width = 25, min_obs = 1),
+    p2_point_roll = roll_sum(p2_point, width = 25, min_obs = 1),
+    roll_win_perc = if_else(point_no < 10, .5, p1_point_roll/(p1_point_roll + p2_point_roll)) * 100) %>%
+  ungroup() %>%
+  mutate(match_id = str_replace(match_id,"2022-wimbledon-", "")) %>%
+  select(-contains("p1_point"), -contains("p2_point"))
+
+prep_w2022 <- point_w2022_0 %>%
+  select(match_id, player1, player2, rank_diff, match_victor, p1_sets, p2_sets, p1_games, p2_games, p1_score, p2_score, point_victor, server, pt_win_perc, roll_win_perc, set_diff, p1_break_pt, p2_break_pt, status, last_point_victor, lastpt_p1_winner, lastpt_p2_winner, p1_serving_for_set, p2_serving_for_set, p1_serving_to_stay, p2_serving_to_stay, sex, p1_srv_win_perc, p2_srv_win_perc, serve_no, point_no, tiebreak)
+```
+
+Our data includes both mens' and womens' singles tennis matches at Wimbledon in July, 2022. We have data from each point. A full data dictionary explaining each of our variables is below. The score of the match is recorded *before* the point takes place.
+
+*I don't know to describe the 3rd and 4th digits of match_id. It just counts. They have no meaning*
+
+```{r data dictionary}
+dictionary_vars <- prep_w2022 %>%
+  select(match_id, player1, player2, rank_diff, match_victor, p1_sets, p2_sets, p1_games, p2_games, p1_score, p2_score, point_victor, server, pt_win_perc, roll_win_perc, set_diff, p1_break_pt, p2_break_pt, status, last_point_victor, lastpt_p1_winner, lastpt_p2_winner, p1_serving_for_set, p2_serving_for_set, p1_serving_to_stay, p2_serving_to_stay) %>%
+  colnames()
+
+tibble(
+  variables = dictionary_vars,
+  explanation = c(
+    "match identification; 1st digit: (1 = men's match, 2 = women's); 2nd digit: round (1-7)",
+    "first and last name of the first player",
+    "first and last name of the second player",
+    "worldwide ranking of player 1 minus ranking of player 2",
+    "winner of the match",
+    "sets won by player 1",
+    "sets won by player 2",
+    "games won by player 1 in current set",
+    "games won by player 2 in current set",
+    "player 1's score within current game",
+    "player 2's score within current game",
+    "winner of the point",
+    "server of the point",
+    "percentage of points won by player 1 in match",
+    "percentage of last 25 points won by player 1 in match",
+    "sets won by player 1 minus sets won by player 2",
+    "player 1 has a chance to \"break\" or win player 2's service game if they win the next point",
+    "player 2 has a chance to \"break\" or win player 1's service game if they win the next point",
+    "measurement of score in set",
+    "winner of previous point",
+    "player 1 hit an untouchable shot to win the previous point",
+    "player 2 hit an untouchable shot to win the previous point",
+    "player 1 is serving and has chance to win set",
+    "player 2 is serving and has chance to win set",
+    "player 1 is serving and could lose set",
+    "player 2 is serving and could lose set"),
+  example = c(
+    str_c(prep_w2022$match_id[1], ", ", prep_w2022$match_id[45554], ", etc."),
+    str_c(prep_w2022$player1[1], ", ", prep_w2022$player1[45554], ", etc."),
+    str_c(prep_w2022$player2[1], ", ", prep_w2022$player2[45554], ", etc."),
+    str_c(prep_w2022$rank_diff[1], ", ", prep_w2022$rank_diff[45554], ", etc."),
+    "1 if player 1 wins, 0 if player 2 wins",
+    "0, 1, or 2",
+    "0, 1, or 2",
+    "0, 1,...,6, etc.",
+    "0, 1,...,6, etc.",
+    "0 (love), 15, 30, 40, AD (advantage)",
+    "0 (love), 15, 30, 40, AD (advantage)",
+    "1 if player 1 wins, 0 if player 2 wins",
+    "1 if player 1 serves, 0 if player 2 serves",
+    "47, 51, etc. (first 3 games are set to 50)",
+    "48, 52, etc. (first 9 points are set to 50)",
+    "-2, -1, 0, 1, or 2",
+    "0 or 1",
+    "0 or 1",
+    "\"no break\" if players are even, \"p1_break\" if player 1 has advantage, \"p2_break\" if player 2 has advantage",
+    "1 if player 1 won previous point, 0 if player 2 won previous point",
+    "0 or 1",
+    "0 or 1",
+    "0 or 1",
+    "0 or 1",
+    "0 or 1",
+    "0 or 1")) %>%
+  flextable() %>%
+  padding(padding.right = 10, part = "body") %>% 
+  align(align = "center", part = "header") %>%
+  width(j = 1, width = 1.5) %>%
+  width(j = 2, width = 3) %>%
+  width(j = 3, width = 2.2) %>%
+  border(border.top = fp_border(color = "pink"))
+```
+
+And here is an example slice of our data. *In ISLE, this will be the full data, allowing them to scroll at their leisure*
+
+```{r}
+prep_w2022 %>% select(any_of(dictionary_vars)) %>%
+  slice(1:21) %>%
+  flextable() %>%
+  padding(padding = 0) %>%
+  align(align = "center", part = "all") %>%
+  width(j = c(2,3), width = .75) %>%
+  fontsize(size = 6, part = "all") %>%
+  width(j = c(1, 4, 10:11), width = .55) %>%
+  width(j = 5, width = .75) %>%
+  width(j = c(6:7), width = .45) %>%
+  width(j = c(8:9), width = .55) %>%
+  width(j = 12, width = .7) %>%
+  width(j = 13, width = .4) %>% 
+  width(j = 14, width = .9)
+```
+
+# Univariate Logistic Regression
+
+Let's begin by using one predictor variable to predict one response variable.
+
+## Binary Response Variables
+
+The identifying factor of logistic regression is the binary response variable. A **binary response variable** is a dependent variable that only has two outcomes. Correlation with binary variables can be difficult to plot, understand, and interpret.
+
+Let's begin by assessing the binary response variable match_victor. The result is 1 if the player wins and 0 if the player loses.
+
+Let's try to predict the result of match_victor by using the discrete predictor variable rank_diff. Rank_diff is the difference between the two players' worldwide rankings. Below is a scatter-plot that visualizes their relationship. The players with superior rankings are located on the right-hand side, and the players with inferior rankings are on the left.
+
+*I duplicated each match, by making each player an observation. Should I not have duplicated? This helps things by making the intercept 0 and making it more perfectly symmetrical. I didn't duplicate the later data sets*
+
+```{r}
+div <- c(48, 312)
+vertical_lines <- c(seq(-div[2] + div[1], div[2] - div[1], div[1]))
+
+ranking_victor <- w2022 %>%
+  filter(last_pt_set == 1) %>%
+  distinct(match_id, player1, ranking1, player2, ranking2, match_victor) %>%
+  mutate(rank_diff = ranking2 - ranking1) %>%
+  pivot_longer(c(player1, player2), names_to = "order", values_to = "player") %>%
+  mutate(rank_diff = if_else(order == "player1", rank_diff, -rank_diff),
+         match_victor = if_else(order == "player1" & match_victor == 1 | order == "player2" & match_victor == 2, 1, 0)) %>%
+  # filter(str_detect(match_id, "wimbledon-11") | str_detect(match_id, "wimbledon-21")) %>%
+  select(-ranking1, -ranking2, -order, -match_id)
+
+ranking_victor %>%
+  ggplot(aes(rank_diff, match_victor)) +
+  geom_point(color = "indianred3", alpha = .7) +
+  scale_x_continuous(limits = c(-div[2], div[2]), breaks = c(-300, -200, -100, 0, 100, 200, 300)) + 
+  labs(y = "Victor", x = "Difference in Ranking")
+```
+
+The stack of points where match_victor (V) = 0 represent the ranking difference for losing players at Wimbledon. Conversely, the stack of points where match_victor (V) = 1 represent the ranking difference by victorious players at Wimbledon.
+
+Would you estimate a player ranked 100 spots below his or her opponent wins his/her match? How confident would you be?
+
+What about 50 spots below his or her opponent? 200? 25?
+
+In simple linear regression, we place a linear trend line on the scatter plot so that our squared residuals are minimized. The **simple linear regression function** follows the formula:
+
+* $E(Y) = \beta_{0} + \beta_{1}X_{1}$
+
+where $\beta_{0}$ and $\beta_{1}$ are parameters and E(Y) is the **expected value** of Y, our response variable. Expected value is an important concept in regression with binary response variables. It represents the average value of the binary response variables given the predictors. These expected values will manifest in proportions ranging from 0 to 1.
+
+For example, if, given a set of predictors, 8 out of 50 players win the match, then the expected value of match_victor (V) is $\frac{8}{50} = 0.16$. On average 16% of players win the match. In other words, there is a 16% probability that V = 1 given the set of predictors.
+
+Let's see what a linear regression model looks like on our data. Remember, the linear trend line represents the expected value of match_victor for our data.
+
+```{r}
+ranking_victor %>%
+  ggplot(aes(rank_diff, match_victor)) +
+  geom_point(color = "indianred3", alpha = .7) +
+  geom_smooth(color = "cadetblue3", method = "lm", level = NA) +
+  scale_x_continuous(name = "Difference in Ranking", limits = c(-div[2], div[2]), breaks = c(-300, -200, -100, 0, 100, 200, 300)) +
+  scale_y_continuous(name = "Victor E(V)", limits = c(-.25, 1.25), breaks = seq(0, 1, .25))
+```
+
+Where does the E(V) approach 0? Where does it approach 1?
+
+What is the E(V) when the player is ranked 100 spots below his or her opponent? Is this close to what you estimated? What about 200 spots?
+
+What is the E(V) when the player is ranked 300 spots below his or her opponent? Is this problematic?
+
+How would you assess the linear regression model as a whole? Do the expected values match your expectations?
+
+## Bins
+
+The linear model is not a good fit for our data. It underestimates E(V) on both ends of the model. One way to improve the model is to separate the data into several groups called **bins**. We displayed the same visualization as before, but we added thirteen bins to help separate up the data.
+
+```{r bins}
+ranking_victor %>% ggplot(aes(rank_diff, match_victor)) +
+  geom_point(color = "indianred3", alpha = .7) +
+  labs(y = "Victor E(V)", x = "Difference in Ranking") +
+  scale_x_continuous(name = "Difference in Ranking", limits = c(-div[2], div[2]), breaks = c(-300, -200, -100, 0, 100, 200, 300)) +
+  geom_vline(xintercept = vertical_lines, color = "darkgrey")
+```
+
+We can find the proportion of victories within each bin and plot them. The dots in blue are the proportion of victories within each bin.
+
+```{r}
+means <- (vertical_lines - div[1]/2) %>% append(-min(.))
+vertical_lines <- vertical_lines %>% append(c(min(.) - div[1], max(.) + div[1]))
+
+ranking_victor %>%
+  mutate(ranking_bin = ((as.numeric(cut(rank_diff, breaks = vertical_lines, labels = means)) - 7) * 48),
+         ranking_bin = if_else(between(rank_diff, -312, -264), -288, ranking_bin)) %>%
+  filter(!is.na(ranking_bin)) %>%
+  group_by(ranking_bin) %>%
+  summarise(victor_prop = mean(match_victor)) %>%
+  bind_rows(ranking_victor) %>%
+  ggplot() +
+  geom_point(aes(rank_diff, match_victor), color = "indianred3", alpha = .7) +
+  geom_point(aes(ranking_bin, victor_prop), color = "navyblue") + 
+  scale_x_continuous(name = "Difference in Ranking", limits = c(-div[2], div[2]), breaks = c(-300, -200, -100, 0, 100, 200, 300)) +
+  labs(y = "Victor E(V)")
+```
+
+The proportions of each bin form a curve. The shape of this curve is typically "S" shaped. The change in the proportion per unit decreases as the E(V) approaches 0 or 1. This is because the victory probability can never surpass the 0 to 1 range. As the players' ranking increases or decreases, eventually the E(V) must flatten.
+
+## Intro to Logistic
+
+There are several methods developed to model this "S" curve, but logistic regression is a popular choice, because it is mathematically easy to manipulate and it has meaningful and simple interpretations.
+
+Logistic regression follows the logistic function:
+
+* $E(Y) = \pi(x) = \displaystyle\frac{e^{\beta_{0} + \beta_{1}x}}{1 + e^{\beta_{0} + \beta_{1}x}}$
+
+where $\pi(x)$ is the probability of y given x.
+
+The **likelihood** is the probability of obtaining the observed set of data given the parameter estimates. Logistic regression uses an estimation method called **maximum likelihood**. It creates estimators $\hat{\beta_{0}}$ and $\hat{\beta_{1}}$ for the unknown true parameters $\beta_{0}$ and $\beta_{1}$ in order to maximize the likelihood.
+
+It is common for logistic regression models to use the **log likelihood** (log of the likelihood), because it is easier to work with. This value will always be negative, and the closer the log likelihood is to 0, the more closely the estimators fit on the data.
+
+Our logistic model provides us with estimates for our parameters $\beta_{0}$ and $\beta_{1}$.
+
+```{r}
+rank_glm <- glm(match_victor ~ rank_diff, family = binomial(link = "logit"), data = ranking_victor)
+rank_beta <- rank_glm$coefficients %>% round(digits = 5)
+```
+
+* $\hat{\beta_{0}}$ (Intercept): `r rank_beta[1]`
+
+* $\hat{\beta_{1}}$ (rank_diff): `r rank_beta[2]`
+
+Thus,
+
+$\hat{\pi}(x) = \displaystyle\frac{e^{0 + .01014x}}{1 + e^{0 + .01014x}}$
+
+With our logistic function, we can predict a value for V given any value of x. Try a few below:
+
+*student can enter a value of x and it should spit out a $\pi(x)$. I started with 50*
+
+```{r}
+x <- 50
+Pi_x <- (exp(rank_beta[1] + rank_beta[2] * x)/(1 + exp(rank_beta[1] + rank_beta[2] * x))) %>% round(digits = 3)
+```
+
+$\hat{\pi}(x)$: `r Pi_x`
+
+Let's see what a logistic regression would looks like mapped onto our data. The blue line represents the expected value of match_victor. It's our models predicted victory probability.
+
+```{r}
+ranking_victor %>%
+  ggplot(aes(rank_diff, match_victor)) +
+  geom_point(color = "indianred3", alpha = .7) +
+  geom_smooth(color = "cadetblue3", method = "glm", se = FALSE, method.args = list(family = binomial)) +
+  scale_x_continuous(limits = c(-div[2], div[2]), breaks = c(-300, -200, -100, 0, 100, 200, 300)) + 
+  labs(y = "Victor E(V)", x = "Difference in Ranking")
+```
+
+Assess the logistic model. Can you see the "S" shaped curve? How well does it match the proportions? How does it differ from the linear model?
+
+What is the proportion of victories for a player ranked 100 spots below his or her opponent? What about 50 spots below? 200?
+
+## Residuals
+
+However, like all models, the logistic function cannot perfectly predict the data. We can add the error term $\epsilon$ to our function to represent the difference between our estimation $\hat{\pi}(x)$ and the binary result V:
+
+* V = $\hat{\pi}(x) + \epsilon$
+
+A **residual** is the difference between the observed value (V) and the model's expected or predicted value ($\hat{\pi}(x)$). We can plot these values on a residual plot. The residuals are on the "logit" scale. We'll come back to that later.
+
+```{r}
+tibble(residuals = rank_glm$residuals,
+       fitted = rank_glm$fitted.values,
+       x = rank_glm$data$rank_diff,
+       y = rank_glm$data$match_victor) %>%
+  ggplot(aes(fitted, residuals)) +
+  geom_point(color = "indianred3") +
+  scale_y_continuous(name = "Residuals", limits = c(-10, 10), breaks = seq(-10, 10, 2.5)) +
+  labs(x = "Predicted Values") +
+  geom_hline(yintercept = 0, color = "darkgrey") +
+  annotate("text", x = .3, y = -7.5, label = "V = 0", color = "darkgrey", size = 10) +
+  annotate("text", x = .7, y = 7.5, label = "V = 1", color = "darkgrey", size = 10)
+```
+
+Each residual represents the error term $\hat{\epsilon}$. As the difference between the predicted values and actual values increase, the residuals increase. The values furthest from 0 represent the most unlikely events according to our model. Can you guess where those values reside on our scatter-plot?
+
+## Interpretation
+
+Interpreting the logistic model relies heavily on the understanding of odds. **Odds** are a ratio of the probability of a success and the probability of a failure (1 - success). We will often need to use this conversion in our interpretations. In our case:
+
+* $odds(x) = \displaystyle\frac{\pi(x)}{1 - \pi(x)}$
+
+which conveniently simplifies to:
+
+* $odds(x) = e^{\beta_{0} + \beta_{1}x}$
+
+Often, we want to find how these odds increase or decrease as our predictor changes. This is called the **odds ratio (OR)**. The odds ratio is calculated by the proportion of odds(x)/odds(x + 1).
+
+* OR < 1 -- an increase in x decreases the odds of Y = 1.
+* OR = 1 -- an increase in x does not impact the odds of Y = 1.
+* OR > 1 -- an increase in x increases the odds of Y = 1.
+
+Recall our $\hat{\beta_{0}}$ and $\hat{\beta_{1}}$. Can you find the player's odds of victory where x = 50? x = 51? Can you calculate their odds ratio?
+
+```{r include = FALSE}
+odds_ratio <- function(x1, x2){
+  odds1 <- exp(rank_beta[1] + rank_beta[2] * x1)
+  odds2 <- exp(rank_beta[1] + rank_beta[2] * x2)
+  
+  odds2/odds1
+}
+
+odds_ratio(99, 101)
+```
+
+*I made a function to calculate the odds ratio, should I let the student use it?*
+
+Does the odds ratio change when x = 99 and x = 100?
+
+Our model is logistic. This means that for each value of x, the odds ratio remains constant. We can calculate the **log odds** by applying a natural log (ln) to our odds function. This returns:
+
+* log odds or "logit" = $g(x)$ = $\beta_{0} + \beta_{1}x$
+
+This logit function is strikingly similar to the linear function, and it offers simple, linear-esque- interpretations. $\beta_{0}$ and $\beta_{1}$ are the intercept and slope of the log odds.
+
+In our example,
+
+* $\hat{\beta_{0}}$  = `r rank_beta[1]` is the estimated log-odds of victory when the difference in ranking is 0.
+
+We can quickly solve for the odds by adding "e" to both sides.
+
+* $e^{\hat{\beta_{0}}}$  = $e^{0}$ = 1 is the estimated odds of victory when the difference in ranking is 0. After converting our odds into a probability, we find that $\hat{\pi}(x)$ = 0.50.
+
+Often, the intercept is meaningless or out of the natural range of the predictor. Consider a predictor like serve speed, height, or weight; these would never be zero. However, the slope is a crucial piece of analysis.
+
+In our example,
+
+* $\hat{\beta_{1}}$ = `r rank_beta[2]`. For each one unit increase in the difference in ranking, the log-odds of victory is estimated to increase by `r rank_beta[2]`.
+
+Once again, we can provide helpful interpretations by adding an "e" to both sides.
+
+* $e^{\hat{\beta_{1}}}$ = $e^{.01014}$ = `r round(exp(rank_beta[2]), digits = 5)`. The estimated odds of victory increase by `r percent(exp(rank_beta[2]) - 1, accuracy = .01)` for each unit increase in ranking difference.
+
+# Attribution
+
+Jeff Sackman's license:
+
+<a rel="license" href="http://creativecommons.org/licenses/by-nc-sa/4.0/"><img alt="Creative Commons License" style="border-width:0" src="https://i.creativecommons.org/l/by-nc-sa/4.0/88x31.png" /></a><br /><span xmlns:dct="http://purl.org/dc/terms/" href="http://purl.org/dc/dcmitype/Dataset" property="dct:title" rel="dct:type">Tennis databases, files, and algorithms</span> by <a xmlns:cc="http://creativecommons.org/ns#" href="http://www.tennisabstract.com/" property="cc:attributionName" rel="cc:attributionURL">Jeff Sackmann / Tennis Abstract</a> is licensed under a <a rel="license" href="http://creativecommons.org/licenses/by-nc-sa/4.0/">Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License</a>.<br />Based on a work at <a xmlns:dct="http://purl.org/dc/terms/" href="https://github.com/JeffSackmann" rel="dct:source">https://github.com/JeffSackmann</a>.
+
